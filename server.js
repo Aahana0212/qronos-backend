@@ -19,8 +19,12 @@ const staffRoutes = require('./routes/staff');  // Staff management routes
 const app = express();
 
 // ============ MIDDLEWARE ============
+// Comma-separated origins via CORS_ORIGINS env var, falling back to local dev origins.
+// Same-origin requests (frontend served by nginx that proxies /api here) won't trigger CORS at all.
+const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001,http://localhost:5173')
+    .split(',').map(s => s.trim()).filter(Boolean);
 app.use(cors({
-    origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173'],
+    origin: corsOrigins.includes('*') ? true : corsOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-restaurant-id']
