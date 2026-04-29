@@ -6,7 +6,7 @@ const { pool } = require('../config/db');
 router.get('/', async (req, res) => {
     try {
         const [items] = await pool.query(
-            'SELECT * FROM menu_items ORDER BY created_at DESC'
+            'SELECT * FROM menu_items ORDER BY id DESC'
         );
         res.json({ success: true, menuItems: items });
     } catch (error) {
@@ -20,7 +20,7 @@ router.get('/restaurant/:restaurantId', async (req, res) => {
     try {
         const { restaurantId } = req.params;
         const [items] = await pool.query(
-            'SELECT * FROM menu_items WHERE restaurant_id = ? ORDER BY created_at DESC',
+            'SELECT * FROM menu_items WHERE restaurant_id = ? ORDER BY id DESC',
             [restaurantId]
         );
         res.json(items);

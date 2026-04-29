@@ -37,7 +37,7 @@ router.get('/:restaurantId/menu', async (req, res) => {
 
         const showAll = all === '1' || all === 'true';
         const sql = showAll
-            ? 'SELECT * FROM menu_items WHERE restaurant_id = ? ORDER BY created_at DESC'
+            ? 'SELECT * FROM menu_items WHERE restaurant_id = ? ORDER BY id DESC'
             : 'SELECT * FROM menu_items WHERE restaurant_id = ? AND is_available = 1';
 
         const [menuItems] = await pool.query(sql, [restaurantId]);
