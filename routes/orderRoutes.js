@@ -201,6 +201,113 @@ router.get('/restaurant/:restaurantId/today', async (req, res) => {
     }
 });
 
+// GET /api/orders/restaurant/:restaurantId/live - Active (non-completed) orders for admin live view
+router.get('/restaurant/:restaurantId/live', async (req, res) => {
+    try {
+        const { restaurantId } = req.params;
+        const [orders] = await pool.query(
+            `SELECT o.*, o.order_id AS order_number, COALESCE(u.name, o.customer_name) AS customer_name
+             FROM orders o
+             LEFT JOIN users u ON o.user_id = u.id
+             WHERE o.restaurant_id = ?
+               AND o.order_status NOT IN ('delivered', 'completed', 'cancelled')
+             ORDER BY o.created_at DESC`,
+            [restaurantId]
+        );
+        res.json(orders);
+    } catch (error) {
+        console.error('Error fetching live orders:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/orders/kitchen/:restaurantId - Kitchen display queue grouped by status
+router.get('/kitchen/:restaurantId', async (req, res) => {
+    try {
+        const { restaurantId } = req.params;
+        const today = new Date().toISOString().split('T')[0];
+
+        const [orders] = await pool.query(
+            `SELECT o.*, o.order_id AS order_number
+             FROM orders o
+             WHERE o.restaurant_id = ?
+               AND o.order_status NOT IN ('delivered', 'completed', 'cancelled')
+             ORDER BY o.created_at ASC`,
+            [restaurantId]
+        );
+
+        // Attach items to each order in one batched query.
+        if (orders.length > 0) {
+            const orderIds = orders.map(o => o.id);
+            const placeholders = orderIds.map(() => '?').join(',');
+            const [items] = await pool.query(
+                `SELECT oi.order_id, oi.quantity, oi.price_at_time, m.name, m.preparation_time
+                 FROM order_items oi
+                 LEFT JOIN menu_items m ON oi.menu_item_id = m.id
+                 WHERE oi.order_id IN (${placeholders})`,
+                orderIds
+            );
+            const byOrder = items.reduce((acc, it) => {
+                (acc[it.order_id] = acc[it.order_id] || []).push(it);
+                return acc;
+            }, {});
+            orders.forEach(o => { o.items = byOrder[o.id] || []; });
+        }
+
+        const newOrders = orders.filter(o => ['pending', 'confirmed'].includes(o.order_status));
+        const preparing = orders.filter(o => o.order_status === 'preparing');
+        const ready = orders.filter(o => o.order_status === 'ready');
+
+        const [[totalRow]] = await pool.query(
+            'SELECT COUNT(*) AS c FROM orders WHERE restaurant_id = ? AND DATE(created_at) = ?',
+            [restaurantId, today]
+        );
+        const [[completedRow]] = await pool.query(
+            `SELECT COUNT(*) AS c FROM orders
+             WHERE restaurant_id = ? AND DATE(created_at) = ?
+               AND order_status IN ('delivered', 'completed')`,
+            [restaurantId, today]
+        );
+
+        res.json({
+            new: newOrders,
+            preparing,
+            ready,
+            stats: {
+                totalToday: totalRow?.c || 0,
+                completedToday: completedRow?.c || 0
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching kitchen orders:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/orders/kitchen/:orderId/status - Kitchen status update (matches by numeric id)
+router.post('/kitchen/:orderId/status', async (req, res) => {
+    const { status } = req.body;
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled', 'delayed'];
+
+    if (!validStatuses.includes(status)) {
+        return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    try {
+        const [result] = await pool.query(
+            'UPDATE orders SET order_status = ? WHERE id = ?',
+            [status, req.params.orderId]
+        );
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+        res.json({ success: true, message: `Order status updated to ${status}` });
+    } catch (error) {
+        console.error('Error updating kitchen order status:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // GET /api/orders/restaurant/:restaurantId/all - All orders
 router.get('/restaurant/:restaurantId/all', async (req, res) => {
     try {
