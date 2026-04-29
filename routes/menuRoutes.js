@@ -1,89 +1,120 @@
-// routes/staff.js
 const express = require('express');
 const router = express.Router();
-const bcrypt = require('bcryptjs');
 const { pool } = require('../config/db');
 
-// GET /api/auth/staff/restaurant/:restaurantId - Get all staff members
-router.get('/staff/restaurant/:restaurantId', async (req, res) => {
+// GET /api/menu - Get all menu items
+router.get('/', async (req, res) => {
     try {
-        const { restaurantId } = req.params;
-        
-        const [staff] = await pool.query(
-            `SELECT id, name, email, phone, role, created_at 
-             FROM users 
-             WHERE restaurant_id = ? AND role IN ('admin', 'kitchen')
-             ORDER BY created_at DESC`,
-            [restaurantId]
+        const [items] = await pool.query(
+            'SELECT * FROM menu_items ORDER BY created_at DESC'
         );
-        
-        res.json(staff);
+        res.json({ success: true, menuItems: items });
     } catch (error) {
-        console.error('Error fetching staff:', error);
+        console.error('Error fetching menu items:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// GET /api/auth/staff/restaurant/:restaurantId/count - Get staff count
-router.get('/staff/restaurant/:restaurantId/count', async (req, res) => {
+// GET /api/menu/restaurant/:restaurantId - Get menu items for a restaurant
+router.get('/restaurant/:restaurantId', async (req, res) => {
     try {
         const { restaurantId } = req.params;
-        
-        const [result] = await pool.query(
-            'SELECT COUNT(*) as count FROM users WHERE restaurant_id = ? AND role IN ("admin", "kitchen")',
+        const [items] = await pool.query(
+            'SELECT * FROM menu_items WHERE restaurant_id = ? ORDER BY created_at DESC',
             [restaurantId]
         );
-        
+        res.json(items);
+    } catch (error) {
+        console.error('Error fetching restaurant menu:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/menu/restaurant/:restaurantId/count - Get menu item count
+router.get('/restaurant/:restaurantId/count', async (req, res) => {
+    try {
+        const { restaurantId } = req.params;
+        const [result] = await pool.query(
+            'SELECT COUNT(*) as count FROM menu_items WHERE restaurant_id = ?',
+            [restaurantId]
+        );
         res.json({ count: result[0]?.count || 0 });
     } catch (error) {
-        console.error('Error fetching staff count:', error);
+        console.error('Error fetching menu count:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// POST /api/auth/staff - Add staff member
-router.post('/staff', async (req, res) => {
-    const { name, email, phone, password, role, restaurant_id } = req.body;
-    
-    if (!name || !email || !password || !restaurant_id) {
-        return res.status(400).json({ error: 'Name, email, password and restaurant_id are required' });
+// POST /api/menu - Add a menu item
+router.post('/', async (req, res) => {
+    const { restaurant_id, name, description, price, takeaway_price, category_id, category, is_veg, is_available } = req.body;
+
+    if (!name || !price || !restaurant_id) {
+        return res.status(400).json({ error: 'Name, price, and restaurant_id are required' });
     }
-    
+
     try {
-        const [existing] = await pool.query(
-            'SELECT id FROM users WHERE email = ?',
-            [email]
-        );
-        
-        if (existing.length > 0) {
-            return res.status(400).json({ error: 'Email already registered' });
-        }
-        
-        const hashedPassword = await bcrypt.hash(password, 10);
-        
         const [result] = await pool.query(
-            'INSERT INTO users (name, email, phone, password_hash, role, restaurant_id) VALUES (?, ?, ?, ?, ?, ?)',
-            [name, email, phone || null, hashedPassword, role || 'kitchen', restaurant_id]
+            `INSERT INTO menu_items (restaurant_id, name, description, price, takeaway_price, category_id, is_veg, is_available)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                restaurant_id,
+                name,
+                description || null,
+                price,
+                takeaway_price || price,
+                category_id || category || null,
+                is_veg || 0,
+                is_available !== undefined ? is_available : 1
+            ]
         );
-        
+
         res.json({
             success: true,
             id: result.insertId,
-            message: 'Staff added successfully'
+            message: 'Menu item added successfully'
         });
     } catch (error) {
-        console.error('Error adding staff:', error);
+        console.error('Error adding menu item:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// DELETE /api/auth/users/:id - Delete user
-router.delete('/users/:id', async (req, res) => {
+// PUT /api/menu/:id - Update a menu item
+router.put('/:id', async (req, res) => {
+    const { id } = req.params;
+    const { name, description, price, takeaway_price, category_id, category, is_veg, is_available } = req.body;
+
     try {
-        await pool.query('DELETE FROM users WHERE id = ?', [req.params.id]);
-        res.json({ success: true, message: 'User deleted successfully' });
+        await pool.query(
+            `UPDATE menu_items SET name = ?, description = ?, price = ?, takeaway_price = ?, category_id = ?, is_veg = ?, is_available = ?
+             WHERE id = ?`,
+            [
+                name,
+                description || null,
+                price,
+                takeaway_price || price,
+                category_id || category || null,
+                is_veg || 0,
+                is_available !== undefined ? is_available : 1,
+                id
+            ]
+        );
+
+        res.json({ success: true, message: 'Menu item updated successfully' });
     } catch (error) {
-        console.error('Error deleting user:', error);
+        console.error('Error updating menu item:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// DELETE /api/menu/:id - Delete a menu item
+router.delete('/:id', async (req, res) => {
+    try {
+        await pool.query('DELETE FROM menu_items WHERE id = ?', [req.params.id]);
+        res.json({ success: true, message: 'Menu item deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting menu item:', error);
         res.status(500).json({ error: error.message });
     }
 });
