@@ -52,60 +52,63 @@ router.post('/customer-login', async (req, res) => {
     }
 });
 
-// ============ RESTAURANT LOGIN - BYPASSED ============
+// ============ RESTAURANT LOGIN ============
 router.post('/login', async (req, res) => {
     const { email, password, role } = req.body;
 
     console.log('🔐 Restaurant Login Attempt:', { email, role });
 
-    if (!email || !role) {
-        return res.status(400).json({ error: 'Email and role are required' });
+    if (!email || !password || !role) {
+        return res.status(400).json({ error: 'Email, password and role are required' });
     }
 
     try {
-        // Try to find user in database
         const [users] = await pool.query(
             'SELECT * FROM users WHERE email = ? AND role = ?',
             [email, role]
         );
 
-        let userId, userName, userRole, userRestaurantId, userPhone;
+        if (users.length === 0) {
+            console.log('❌ User not found for', email, role);
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
 
-        if (users.length > 0) {
-            // User exists - use database data
-            const user = users[0];
-            userId = user.id;
-            userName = user.name;
-            userRole = user.role;
-            userRestaurantId = user.restaurant_id;
-            userPhone = user.phone;
-            console.log('✅ User found in database');
-        } else {
-            // User not found - create temporary data
-            console.log('⚠️ User not found, creating temporary session');
-            userId = Math.floor(Math.random() * 1000) + 100;
-            userName = email.split('@')[0];
-            userRole = role;
-            userRestaurantId = 1;
-            userPhone = '9999999999';
+        const user = users[0];
+
+        // Verify password
+        const passwordOk = user.password_hash
+            ? await bcrypt.compare(password, user.password_hash)
+            : false;
+
+        if (!passwordOk) {
+            console.log('❌ Wrong password for', email);
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+
+        if (!user.restaurant_id) {
+            console.log('❌ User has no restaurant_id:', user.id);
+            return res.status(403).json({ error: 'No restaurant linked to this user' });
         }
 
         const token = jwt.sign(
-            { id: userId, email, role: userRole, restaurantId: userRestaurantId },
+            { id: user.id, email: user.email, role: user.role, restaurantId: user.restaurant_id },
             process.env.JWT_SECRET,
             { expiresIn: '7d' }
         );
 
+        console.log(`✅ Login OK — user ${user.id}, restaurant ${user.restaurant_id}`);
+
         res.json({
             success: true,
             token,
-            restaurantId: userRestaurantId,
+            restaurantId: user.restaurant_id,
             user: {
-                id: userId,
-                name: userName,
-                email: email,
-                phone: userPhone,
-                role: userRole
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                phone: user.phone,
+                role: user.role,
+                restaurant_id: user.restaurant_id
             }
         });
     } catch (error) {
@@ -183,8 +186,8 @@ router.post('/register-restaurant', async (req, res) => {
 
         const slug = restaurant.slug || restaurant.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
         const [restoResult] = await pool.query(
-            'INSERT INTO restaurants (name, slug, phone, address, is_active) VALUES (?, ?, ?, ?, 1)',
-            [restaurant.name, slug, restaurant.phone || null, restaurant.address || null]
+            'INSERT INTO restaurants (name, slug, phone, address, cuisine_type, status) VALUES (?, ?, ?, ?, ?, "active")',
+            [restaurant.name, slug, restaurant.phone || null, restaurant.address || null, restaurant.type || null]
         );
 
         const restaurantId = restoResult.insertId;

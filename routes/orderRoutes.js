@@ -27,9 +27,36 @@ router.post('/', async (req, res) => {
         special_instructions
     } = req.body;
 
+    console.log('📦 New order payload:', {
+        user_id, restaurant_id, order_type, customer_name, customer_phone, total_amount
+    });
+
     if (!restaurant_id || !items || items.length === 0) {
         return res.status(400).json({ error: 'Restaurant and items are required' });
     }
+
+    // Normalise customer details. If the frontend sent blank/whitespace and
+    // the order is tied to a logged-in user, look the name up from the users
+    // table so the restaurant side never sees a nameless ticket.
+    let finalCustomerName = (customer_name || '').toString().trim();
+    let finalCustomerPhone = (customer_phone || '').toString().trim();
+
+    if ((!finalCustomerName || !finalCustomerPhone) && user_id) {
+        try {
+            const [rows] = await pool.query(
+                'SELECT name, phone FROM users WHERE id = ? LIMIT 1',
+                [user_id]
+            );
+            if (rows.length > 0) {
+                if (!finalCustomerName) finalCustomerName = (rows[0].name || '').trim();
+                if (!finalCustomerPhone) finalCustomerPhone = (rows[0].phone || '').trim();
+            }
+        } catch (e) {
+            console.warn('User lookup for order customer fallback failed:', e.message);
+        }
+    }
+
+    if (!finalCustomerName) finalCustomerName = 'Guest';
 
     const orderId = generateOrderId();
 
@@ -37,11 +64,12 @@ router.post('/', async (req, res) => {
         await pool.query('START TRANSACTION');
 
         const [orderResult] = await pool.query(
-            `INSERT INTO orders (order_id, user_id, restaurant_id, order_type, subtotal, delivery_fee, tax, total_amount, 
-             payment_method, delivery_address, table_number, pickup_time, customer_name, customer_phone, special_instructions, order_status) 
+            `INSERT INTO orders (order_id, user_id, restaurant_id, order_type, subtotal, delivery_fee, tax, total_amount,
+             payment_method, delivery_address, table_number, pickup_time, customer_name, customer_phone, special_instructions, order_status)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
             [orderId, user_id || null, restaurant_id, order_type, subtotal, delivery_fee, tax, total_amount,
-             payment_method, delivery_address, table_number, pickup_time, customer_name, customer_phone, special_instructions]
+             payment_method, delivery_address || null, table_number || null, pickup_time || null,
+             finalCustomerName, finalCustomerPhone || null, special_instructions || null]
         );
 
         for (const item of items) {
@@ -56,6 +84,8 @@ router.post('/', async (req, res) => {
         }
 
         await pool.query('COMMIT');
+
+        console.log(`✅ Order ${orderId} stored — customer="${finalCustomerName}", phone="${finalCustomerPhone}"`);
 
         res.json({
             success: true,
@@ -176,13 +206,15 @@ router.get('/restaurant/:restaurantId/today', async (req, res) => {
             [restaurantId, today]
         );
         
-        // Recent orders (last 5)
+        // Recent orders (last 5) — prefer the form-entered customer name over
+        // the logged-in user's account name.
         const [recentOrders] = await pool.query(
-            `SELECT o.*, u.name as customer_name 
-             FROM orders o 
-             LEFT JOIN users u ON o.user_id = u.id 
-             WHERE o.restaurant_id = ? 
-             ORDER BY o.created_at DESC 
+            `SELECT o.*,
+                    COALESCE(NULLIF(TRIM(o.customer_name), ''), NULLIF(TRIM(u.name), ''), 'Guest') AS customer_name
+             FROM orders o
+             LEFT JOIN users u ON o.user_id = u.id
+             WHERE o.restaurant_id = ?
+             ORDER BY o.created_at DESC
              LIMIT 5`,
             [restaurantId]
         );
@@ -205,8 +237,12 @@ router.get('/restaurant/:restaurantId/today', async (req, res) => {
 router.get('/restaurant/:restaurantId/live', async (req, res) => {
     try {
         const { restaurantId } = req.params;
+        // Prefer the customer name entered at checkout (o.customer_name) over the
+        // logged-in user's account name. The user's account name is only a
+        // fallback when the form was left blank.
         const [orders] = await pool.query(
-            `SELECT o.*, o.order_id AS order_number, COALESCE(u.name, o.customer_name) AS customer_name
+            `SELECT o.*, o.order_id AS order_number,
+                    COALESCE(NULLIF(TRIM(o.customer_name), ''), NULLIF(TRIM(u.name), ''), 'Guest') AS customer_name
              FROM orders o
              LEFT JOIN users u ON o.user_id = u.id
              WHERE o.restaurant_id = ?
@@ -312,16 +348,22 @@ router.post('/kitchen/:orderId/status', async (req, res) => {
 router.get('/restaurant/:restaurantId/all', async (req, res) => {
     try {
         const { restaurantId } = req.params;
-        
+
+        // Returns three name-related fields so we can diagnose where it's coming
+        // from: raw_customer_name (DB column, exactly as POSTed), user_name (from
+        // the linked user row), and customer_name (the resolved value the UI uses).
         const [orders] = await pool.query(
-            `SELECT o.*, u.name as customer_name 
-             FROM orders o 
-             LEFT JOIN users u ON o.user_id = u.id 
-             WHERE o.restaurant_id = ? 
+            `SELECT o.*,
+                    o.customer_name AS raw_customer_name,
+                    u.name AS user_name,
+                    COALESCE(NULLIF(TRIM(o.customer_name), ''), NULLIF(TRIM(u.name), ''), 'Guest') AS customer_name
+             FROM orders o
+             LEFT JOIN users u ON o.user_id = u.id
+             WHERE o.restaurant_id = ?
              ORDER BY o.created_at DESC`,
             [restaurantId]
         );
-        
+
         res.json(orders);
     } catch (error) {
         console.error('Error fetching all orders:', error);

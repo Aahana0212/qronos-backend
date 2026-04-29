@@ -134,11 +134,6 @@ const startServer = async () => {
         console.log(`   POST /api/menu                           - Add menu item`);
         console.log(`   PUT  /api/menu/:id                       - Update menu item`);
         console.log(`   DELETE /api/menu/:id                     - Delete menu item`);
-        console.log(`\n🔐 Test Credentials:`);
-        console.log(`   Customer: customer@test.com / test123`);
-        console.log(`   Owner:    owner@pizzahub.com / test123`);
-        console.log(`   Admin:    admin@pizzahub.com / test123`);
-        console.log(`   Kitchen:  kitchen@pizzahub.com / test123`);
         console.log(`\n✨ Server ready!`);
     });
 };
