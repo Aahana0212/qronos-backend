@@ -1,209 +1,248 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../config/db');
+const { pool } = require('../config/db');
 
-// GET /api/orders/user/:phone - Get orders by user phone
-router.get('/user/:phone', async (req, res) => {
-    try {
-        const { phone } = req.params;
-        
-        const [orders] = await db.query(`
-            SELECT o.*, 
-                   GROUP_CONCAT(
-                       CONCAT(oi.quantity, 'x ', mi.name) 
-                       SEPARATOR ', '
-                   ) as items_summary,
-                   COUNT(oi.id) as item_count
-            FROM orders o
-            LEFT JOIN order_items oi ON o.id = oi.order_id
-            LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id
-            WHERE o.customer_phone = ?
-            GROUP BY o.id
-            ORDER BY o.created_at DESC
-        `, [phone]);
-        
-        res.json(orders);
-    } catch (error) {
-        console.error('Error fetching user orders:', error);
-        res.status(500).json({ error: 'Database error' });
-    }
-});
+// Generate order ID
+const generateOrderId = () => {
+    return 'ORD' + Date.now() + Math.floor(Math.random() * 1000);
+};
 
-// GET /api/orders/user/:phone - Get orders by user phone
-router.get('/user/:phone', async (req, res) => {
-    try {
-        const { phone } = req.params;
-        
-        const [orders] = await db.query(`
-            SELECT o.*, 
-                   GROUP_CONCAT(
-                       CONCAT(oi.quantity, 'x ', mi.name) 
-                       SEPARATOR ', '
-                   ) as items_summary
-            FROM orders o
-            LEFT JOIN order_items oi ON o.id = oi.order_id
-            LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id
-            WHERE o.customer_phone = ?
-            GROUP BY o.id
-            ORDER BY o.created_at DESC
-        `, [phone]);
-        
-        res.json(orders);
-    } catch (error) {
-        console.error('Error fetching user orders:', error);
-        res.status(500).json({ error: 'Database error' });
-    }
-});
-
-// ============ GET ALL ORDERS (For Admin) ============
-router.get('/', async (req, res) => {
-    try {
-        const [orders] = await db.query(`
-            SELECT o.*, 
-                   GROUP_CONCAT(
-                       CONCAT(oi.quantity, 'x ', mi.name) 
-                       SEPARATOR ', '
-                   ) as items_summary
-            FROM orders o
-            LEFT JOIN order_items oi ON o.id = oi.order_id
-            LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id
-            GROUP BY o.id
-            ORDER BY o.created_at DESC
-        `);
-        res.json(orders);
-    } catch (error) {
-        console.error('Error fetching all orders:', error);
-        res.status(500).json({ error: 'Database error' });
-    }
-});
-
-// ============ POST - Place new order ============
+// CREATE ORDER
 router.post('/', async (req, res) => {
     const {
+        user_id,
+        restaurant_id,
+        order_type,
+        items,
+        subtotal,
+        delivery_fee,
+        tax,
+        total_amount,
+        payment_method,
+        delivery_address,
+        table_number,
+        pickup_time,
         customer_name,
         customer_phone,
-        customer_email,
-        order_type,
-        table_number,
-        delivery_address,
-        special_instructions,
-        items,
-        total_amount,
-        payment_method
+        special_instructions
     } = req.body;
 
-    if (!items || items.length === 0) {
-        return res.status(400).json({ error: 'No items in order' });
+    if (!restaurant_id || !items || items.length === 0) {
+        return res.status(400).json({ error: 'Restaurant and items are required' });
     }
 
-    const orderNumber = 'ORD' + Date.now().toString().slice(-8);
+    const orderId = generateOrderId();
 
     try {
-        await db.query('START TRANSACTION');
+        await pool.query('START TRANSACTION');
 
-        const [orderResult] = await db.query(
-            `INSERT INTO orders (
-                order_number, customer_name, customer_phone, customer_email,
-                order_type, table_number, delivery_address, special_instructions,
-                total_amount, payment_method, order_status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [
-                orderNumber, customer_name, customer_phone, customer_email || null,
-                order_type, table_number || null, delivery_address || null,
-                special_instructions || null, total_amount, payment_method, 'placed'
-            ]
+        const [orderResult] = await pool.query(
+            `INSERT INTO orders (order_id, user_id, restaurant_id, order_type, subtotal, delivery_fee, tax, total_amount, 
+             payment_method, delivery_address, table_number, pickup_time, customer_name, customer_phone, special_instructions, order_status) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+            [orderId, user_id || null, restaurant_id, order_type, subtotal, delivery_fee, tax, total_amount,
+             payment_method, delivery_address, table_number, pickup_time, customer_name, customer_phone, special_instructions]
         );
 
-        const orderId = orderResult.insertId;
-
         for (const item of items) {
-            await db.query(
-                `INSERT INTO order_items (
-                    order_id, menu_item_id, quantity, price_at_time, subtotal
-                ) VALUES (?, ?, ?, ?, ?)`,
-                [orderId, item.id, item.quantity, item.price, item.price * item.quantity]
+            await pool.query(
+                'INSERT INTO order_items (order_id, menu_item_id, quantity, price_at_time) VALUES (?, ?, ?, ?)',
+                [orderResult.insertId, item.menu_item_id, item.quantity, item.price_at_time]
             );
         }
 
-        await db.query('COMMIT');
+        if (user_id) {
+            await pool.query('DELETE FROM cart_items WHERE user_id = ?', [user_id]);
+        }
+
+        await pool.query('COMMIT');
 
         res.json({
             success: true,
             orderId: orderId,
-            orderNumber: orderNumber,
             message: 'Order placed successfully'
         });
-
     } catch (error) {
-        await db.query('ROLLBACK');
-        console.error('Error placing order:', error);
-        res.status(500).json({ error: 'Failed to place order' });
+        await pool.query('ROLLBACK');
+        console.error('Order creation error:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
-// ============ GET - Order by ID ============
+// GET orders by user ID
+router.get('/user/:userId', async (req, res) => {
+    try {
+        const [orders] = await pool.query(
+            `SELECT o.*, r.name as restaurant_name 
+             FROM orders o 
+             JOIN restaurants r ON o.restaurant_id = r.id 
+             WHERE o.user_id = ? 
+             ORDER BY o.created_at DESC`,
+            [req.params.userId]
+        );
+        res.json({ success: true, orders });
+    } catch (error) {
+        console.error('Error fetching orders:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET single order by order_id
 router.get('/:orderId', async (req, res) => {
     try {
-        const { orderId } = req.params;
-        
-        const [orders] = await db.query(
-            `SELECT o.*, 
-                    oi.quantity, oi.price_at_time,
-                    mi.name as item_name, mi.id as item_id
-             FROM orders o
-             LEFT JOIN order_items oi ON o.id = oi.order_id
-             LEFT JOIN menu_items mi ON oi.menu_item_id = mi.id
-             WHERE o.order_number = ? OR o.id = ?`,
-            [orderId, orderId]
+        const [orders] = await pool.query(
+            `SELECT o.*, r.name as restaurant_name, r.address as restaurant_address 
+             FROM orders o 
+             JOIN restaurants r ON o.restaurant_id = r.id 
+             WHERE o.order_id = ?`,
+            [req.params.orderId]
         );
-        
+
         if (orders.length === 0) {
             return res.status(404).json({ error: 'Order not found' });
         }
-        
-        const orderData = {
-            id: orders[0].id,
-            orderNumber: orders[0].order_number,
-            orderType: orders[0].order_type,
-            orderStatus: orders[0].order_status,
-            total: parseFloat(orders[0].total_amount),
-            customerName: orders[0].customer_name,
-            customerPhone: orders[0].customer_phone,
-            deliveryAddress: orders[0].delivery_address,
-            orderDate: orders[0].created_at,
-            items: orders.filter(o => o.item_id).map(o => ({
-                id: o.item_id,
-                name: o.item_name,
-                quantity: o.quantity,
-                price: parseFloat(o.price_at_time),
-                subtotal: o.quantity * o.price_at_time
-            }))
-        };
-        
-        res.json(orderData);
-        
+
+        const [items] = await pool.query(
+            `SELECT oi.*, m.name, m.image_url 
+             FROM order_items oi 
+             JOIN menu_items m ON oi.menu_item_id = m.id 
+             WHERE oi.order_id = ?`,
+            [orders[0].id]
+        );
+
+        res.json({ success: true, order: orders[0], items });
     } catch (error) {
         console.error('Error fetching order:', error);
-        res.status(500).json({ error: 'Database error' });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// ============ PUT - Update order status ============
+// UPDATE order status
 router.put('/:orderId/status', async (req, res) => {
+    const { status } = req.body;
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'];
+
+    if (!validStatuses.includes(status)) {
+        return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    try {
+        await pool.query(
+            'UPDATE orders SET order_status = ? WHERE order_id = ?',
+            [status, req.params.orderId]
+        );
+        res.json({ success: true, message: `Order status updated to ${status}` });
+    } catch (error) {
+        console.error('Error updating order status:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ RESTAURANT DASHBOARD ENDPOINTS (NEW) ============
+
+// GET /api/orders/restaurant/:restaurantId/today - Today's orders stats
+router.get('/restaurant/:restaurantId/today', async (req, res) => {
+    try {
+        const { restaurantId } = req.params;
+        const today = new Date().toISOString().split('T')[0];
+        
+        // Today's orders count
+        const [todayCountResult] = await pool.query(
+            'SELECT COUNT(*) as count FROM orders WHERE restaurant_id = ? AND DATE(created_at) = ?',
+            [restaurantId, today]
+        );
+        
+        // Pending orders count
+        const [pendingResult] = await pool.query(
+            'SELECT COUNT(*) as count FROM orders WHERE restaurant_id = ? AND order_status = "pending"',
+            [restaurantId]
+        );
+        
+        // Preparing orders count
+        const [preparingResult] = await pool.query(
+            'SELECT COUNT(*) as count FROM orders WHERE restaurant_id = ? AND order_status = "preparing"',
+            [restaurantId]
+        );
+        
+        // Ready orders count
+        const [readyResult] = await pool.query(
+            'SELECT COUNT(*) as count FROM orders WHERE restaurant_id = ? AND order_status = "ready"',
+            [restaurantId]
+        );
+        
+        // Today's revenue
+        const [revenueResult] = await pool.query(
+            'SELECT SUM(total_amount) as revenue FROM orders WHERE restaurant_id = ? AND DATE(created_at) = ? AND order_status != "cancelled"',
+            [restaurantId, today]
+        );
+        
+        // Recent orders (last 5)
+        const [recentOrders] = await pool.query(
+            `SELECT o.*, u.name as customer_name 
+             FROM orders o 
+             LEFT JOIN users u ON o.user_id = u.id 
+             WHERE o.restaurant_id = ? 
+             ORDER BY o.created_at DESC 
+             LIMIT 5`,
+            [restaurantId]
+        );
+        
+        res.json({
+            todayCount: todayCountResult[0]?.count || 0,
+            pendingCount: pendingResult[0]?.count || 0,
+            preparingCount: preparingResult[0]?.count || 0,
+            readyCount: readyResult[0]?.count || 0,
+            todayRevenue: revenueResult[0]?.revenue || 0,
+            recentOrders: recentOrders
+        });
+    } catch (error) {
+        console.error('Error fetching today orders:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/orders/restaurant/:restaurantId/all - All orders
+router.get('/restaurant/:restaurantId/all', async (req, res) => {
+    try {
+        const { restaurantId } = req.params;
+        
+        const [orders] = await pool.query(
+            `SELECT o.*, u.name as customer_name 
+             FROM orders o 
+             LEFT JOIN users u ON o.user_id = u.id 
+             WHERE o.restaurant_id = ? 
+             ORDER BY o.created_at DESC`,
+            [restaurantId]
+        );
+        
+        res.json(orders);
+    } catch (error) {
+        console.error('Error fetching all orders:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/orders/:orderId/status - Update order status (alternative endpoint)
+router.post('/:orderId/status', async (req, res) => {
     try {
         const { orderId } = req.params;
         const { status } = req.body;
-
-        await db.query(
-            'UPDATE orders SET order_status = ? WHERE order_number = ? OR id = ?',
-            [status, orderId, orderId]
+        
+        const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'];
+        
+        if (!validStatuses.includes(status)) {
+            return res.status(400).json({ error: 'Invalid status' });
+        }
+        
+        await pool.query(
+            'UPDATE orders SET order_status = ? WHERE id = ?',
+            [status, orderId]
         );
         
-        res.json({ success: true, status });
-        
+        res.json({ success: true, message: 'Order status updated successfully' });
     } catch (error) {
-        console.error('Error updating order:', error);
-        res.status(500).json({ error: 'Database error' });
+        console.error('Error updating order status:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
